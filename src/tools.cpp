@@ -37,3 +37,9 @@ VectorXd Tools::CalculateRMSE(const vector<VectorXd> &estimations,
 
 	return rmse;
 }
+
+double Tools::NormalizeAngle(double angle) {
+  return angle < -M_PI
+    ? M_PI + std::fmod(angle - -M_PI, M_PI - -M_PI)
+    : std::fmod(angle - -M_PI, M_PI - -M_PI) + -M_PI;
+}

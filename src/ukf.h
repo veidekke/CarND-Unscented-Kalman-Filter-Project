@@ -2,6 +2,7 @@
 #define UKF_H
 
 #include "measurement_package.h"
+#include "tools.h"
 #include "Eigen/Dense"
 #include <vector>
 #include <string>
@@ -39,6 +40,12 @@ public:
 
   ///* Matrix for sigma points in measurement space - lidar
   MatrixXd Zsig_lidar_;
+
+  ///* Measurement noise covariance matrix - radar
+  MatrixXd R_radar_;
+
+  ///* Measurement noise covariance matrix - lidar
+  MatrixXd R_lidar_;
 
   ///* Time when the state is true, in us
   long long time_us_;
@@ -79,9 +86,14 @@ public:
   ///* Augmented state dimension
   int n_aug_;
 
+  ///* Number of sigma points
+  int n_sig_;
+
   ///* Sigma point spreading parameter
   double lambda_;
 
+  ///* Tools instance used for angle normalization
+  Tools tools;
 
   /**
    * Constructor
@@ -115,7 +127,7 @@ public:
 
   /**
    * Predict sigma points, write result directly into Xsig_pred_.
-   * @param {double} delta_t the change in time (in seconds) between the last
+   * @param {double} delta_t The change in time (in seconds) between the last
    * measurement and this one.
    */
   void SigmaPointPrediction(double delta_t);

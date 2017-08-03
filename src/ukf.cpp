@@ -23,6 +23,9 @@ UKF::UKF() {
   // Augmented dimension
   n_aug_ = 7;
 
+  // Number of sigma points
+  n_sig_ = 2 * n_aug_ + 1;
+
   // Measurement dimension - radar
   n_z_radar_ = 3;
 
@@ -33,19 +36,19 @@ UKF::UKF() {
   lambda_ = 3 - n_aug_;
 
   // Augmented sigma points matrix
-  Xsig_aug_ = MatrixXd(n_aug_, 2 * n_aug_ + 1);
+  Xsig_aug_ = MatrixXd(n_aug_, n_sig_);
 
   // Predicted sigma points matrix
-  Xsig_pred_ = MatrixXd(n_x_, 2 * n_aug_ + 1);
+  Xsig_pred_ = MatrixXd(n_x_, n_sig_);
 
   // Matrix for sigma points in measurement space - radar
-  Zsig_radar_ = MatrixXd(n_z_radar_, 2 * n_aug_ + 1);
+  Zsig_radar_ = MatrixXd(n_z_radar_, n_sig_);
 
   // Matrix for sigma points in measurement space - lidar
-  Zsig_lidar_ = MatrixXd(n_z_lidar_, 2 * n_aug_ + 1);
+  Zsig_lidar_ = MatrixXd(n_z_lidar_, n_sig_);
 
   // Weights
-  weights_ = VectorXd(2 * n_aug_ + 1);
+  weights_ = VectorXd(n_sig_);
 
   // Initial state vector
   x_ = VectorXd(n_x_);
@@ -53,9 +56,7 @@ UKF::UKF() {
 
   // Initial covariance matrix
   P_ = MatrixXd::Identity(n_x_, n_x_);
-  // TODO: ^ initialize x_ and P_ ("What to expect") ^
 
-  // TODO: v tune those v
   // Process noise standard deviation longitudinal acceleration in m/s^2
   std_a_ = 0.5;
 
@@ -77,13 +78,23 @@ UKF::UKF() {
   // Radar measurement noise standard deviation radius change in m/s
   std_radrd_ = 0.3;
 
+  // Used for angle normalization
+  Tools tools;
+
+  // Measurement noise covariance matrix - radar
+  R_radar_ = MatrixXd(n_z_radar_, n_z_radar_);
+  R_radar_ << std_radr_ * std_radr_, 0, 0,
+              0, std_radphi_ * std_radphi_, 0,
+              0, 0, std_radrd_ * std_radrd_;
+
+  // Measurement noise covariance matrix - lidar
+  R_lidar_ = MatrixXd(n_z_lidar_, n_z_lidar_);
+  R_lidar_ << std_laspx_ * std_laspx_, 0 ,
+              0, std_laspy_ * std_laspy_;
+
   // Set weights
-  double weight_0 = lambda_ / (lambda_ + n_aug_);
-  weights_(0) = weight_0;
-  for (int i = 1; i < 2 * n_aug_ + 1; i++) {
-    double weight = 0.5 / (n_aug_ + lambda_);
-    weights_(i) = weight;
-  }
+  weights_.fill(0.5 / (lambda_ + n_aug_));
+  weights_(0) = lambda_ / (lambda_ + n_aug_);
 }
 
 UKF::~UKF() {}
@@ -126,12 +137,6 @@ void UKF::ProcessMeasurement(MeasurementPackage measurement_pack) {
   // Time elapsed between current and previous measurements (in s)
   double delta_t = (measurement_pack.timestamp_ - time_us_) / 1000000.0;
 	time_us_ = measurement_pack.timestamp_;
-
-  // Short times between two measurement may lead to algorithmic issues
-  if (delta_t < 0.01)
-  {
-   return;
-  }
 
   AugmentedSigmaPoints();
   SigmaPointPrediction(delta_t);
@@ -200,7 +205,7 @@ void UKF::AugmentedSigmaPoints() {
  */
 void UKF::SigmaPointPrediction(double delta_t) {
   // Predict sigma points
-  for (int i = 0; i < 2 * n_aug_ + 1; i++)
+  for (int i = 0; i < n_sig_; i++)
   {
     // Extract values for better readability
     double p_x = Xsig_aug_(0, i);
@@ -256,26 +261,17 @@ void UKF::PredictMeanAndCovariance() {
   //MatrixXd P = MatrixXd(n_x_, n_x_);
 
   // Predicted state mean
-  x_.fill(0.0);
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {  // Iterate over sigma points
-    x_ = x_ + weights_(i) * Xsig_pred_.col(i);
-  }
+  x_ = Xsig_pred_ * weights_;
 
   // Predicted state covariance matrix
   P_.fill(0.0);
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {  // Iterate over sigma points
+  for (int i = 0; i < n_sig_; i++) {  // Iterate over sigma points
 
     // State difference
     VectorXd x_diff = Xsig_pred_.col(i) - x_;
 
     // Angle normalization
-    while (x_diff(3) > M_PI) {
-      x_diff(3) -= 2. * M_PI;
-    }
-
-    while (x_diff(3) < -M_PI) {
-      x_diff(3) += 2. * M_PI;
-    }
+    x_diff(3) = tools.NormalizeAngle(x_diff(3));
 
     P_ = P_ + weights_(i) * x_diff * x_diff.transpose() ;
   }
@@ -289,7 +285,7 @@ void UKF::PredictMeanAndCovariance() {
  */
 void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
   // Transform sigma points into measurement space
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {  // 2n+1 sigma points
+  for (int i = 0; i < n_sig_; i++) {  // 2n+1 sigma points
 
     // Extract values for better readibility
     double p_x = Xsig_pred_(0, i);
@@ -302,10 +298,12 @@ void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
 
     // Measurement model
     if (is_radar) {
+      // Avoid domain errors and division by zero
+      if (p_y == 0 && p_x == 0) {
+        p_y = 0.01;
+        p_x = 0.01;
+      }
       double rho = sqrt(p_x * p_x + p_y * p_y);
-      // Avoid domain errors and vision by zero
-      if (rho == 0 || (p_y == 0 && p_x == 0))
-        return;
       Zsig_radar_(0, i) = rho;
       Zsig_radar_(1, i) = atan2(p_y, p_x);  // phi
       Zsig_radar_(2, i) = (p_x * v1 + p_y * v2 ) / rho;  // rho_dot
@@ -324,7 +322,7 @@ void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
   }
   z_pred.fill(0.0);
 
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {
+  for (int i = 0; i < n_sig_; i++) {
     if (is_radar) {
       z_pred = z_pred + weights_(i) * Zsig_radar_.col(i);
     } else {
@@ -341,7 +339,7 @@ void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
   }
   S.fill(0.0);
 
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {  // 2n+1 simga points
+  for (int i = 0; i < n_sig_; i++) {  // 2n+1 simga points
     // Residual
     VectorXd z_diff;
     if (is_radar) {
@@ -351,30 +349,17 @@ void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
     }
 
     // Angle normalization
-    while (z_diff(1) > M_PI) {
-      z_diff(1) -= 2. * M_PI;
-    }
-
-    while (z_diff(1) < -M_PI) {
-      z_diff(1) += 2. * M_PI;
-    }
+    z_diff(1) = tools.NormalizeAngle(z_diff(1));
 
     S = S + weights_(i) * z_diff * z_diff.transpose();
   }
 
   // Add measurement noise covariance matrix
-  MatrixXd R;
   if (is_radar) {
-    R = MatrixXd(n_z_radar_, n_z_radar_);
-    R <<    std_radr_ * std_radr_, 0, 0,
-            0, std_radphi_ * std_radphi_, 0,
-            0, 0,std_radrd_ * std_radrd_;
+    S = S + R_radar_;
   } else {
-    R = MatrixXd(n_z_lidar_, n_z_lidar_);
-    R <<    std_laspx_ * std_laspx_, 0 ,
-            0, std_laspy_ * std_laspy_;
+    S = S + R_lidar_;
   }
-  S = S + R;
 
   *z_out = z_pred;
   *S_out = S;
@@ -388,10 +373,6 @@ void UKF::PredictMeasurement(VectorXd* z_out, MatrixXd* S_out, bool is_radar) {
  * @param {bool} is_radar Is measurement radar (or lidar)?
  */
 void UKF::Update(MeasurementPackage measurement_pack, VectorXd z_pred, MatrixXd S, bool is_radar) {
-  /**
-  TODO: calculate both NIS.
-  */
-
   // Incoming measurement
   VectorXd z;
   if (is_radar) {
@@ -413,7 +394,7 @@ void UKF::Update(MeasurementPackage measurement_pack, VectorXd z_pred, MatrixXd 
 
   // Calculate cross correlation matrix
   Tc.fill(0.0);
-  for (int i = 0; i < 2 * n_aug_ + 1; i++) {  // 2n+1 sigma points
+  for (int i = 0; i < n_sig_; i++) {  // 2n+1 sigma points
 
     // Residual
     VectorXd z_diff;
@@ -424,25 +405,13 @@ void UKF::Update(MeasurementPackage measurement_pack, VectorXd z_pred, MatrixXd 
     }
 
     // Angle normalization
-    while (z_diff(1) > M_PI) {
-      z_diff(1) -= 2. * M_PI;
-    }
-
-    while (z_diff(1) < -M_PI) {
-      z_diff(1) += 2. * M_PI;
-    }
+    z_diff(1) = tools.NormalizeAngle(z_diff(1));
 
     // State difference
     VectorXd x_diff = Xsig_pred_.col(i) - x_;
 
     // Angle normalization
-    while (x_diff(3) > M_PI) {
-      x_diff(3) -= 2. * M_PI;
-    }
-
-    while (x_diff(3) < -M_PI) {
-      x_diff(3) += 2. * M_PI;
-    }
+    x_diff(3) = tools.NormalizeAngle(x_diff(3));
 
     Tc = Tc + weights_(i) * x_diff * z_diff.transpose();
   }
@@ -453,15 +422,9 @@ void UKF::Update(MeasurementPackage measurement_pack, VectorXd z_pred, MatrixXd 
   // Residual
   VectorXd z_diff = z - z_pred;
 
-  // TODO: helper function
   // Angle normalization
-  while (z_diff(1) > M_PI) {
-    z_diff(1) -= 2. * M_PI;
-  }
+  z_diff(1) = tools.NormalizeAngle(z_diff(1));
 
-  while (z_diff(1) < -M_PI) {
-    z_diff(1) += 2. * M_PI;
-  }
 
   // Update state mean and covariance matrix
   x_ = x_ + K * z_diff;
